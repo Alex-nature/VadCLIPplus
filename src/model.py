@@ -6,6 +6,7 @@ import torch.nn.functional as F
 from torch import nn
 from clip import clip
 from utils.layers import GraphConvolution, DistanceAdj
+from tca_module import TCATransformerEncoder, generate_sliding_window_mask
 
 class LayerNorm(nn.LayerNorm):
 
@@ -68,7 +69,13 @@ class CLIPVAD(nn.Module):
                  attn_window: int,
                  prompt_prefix: int,
                  prompt_postfix: int,
-                 device):
+                 device,
+                 use_tca: bool = False,
+                 tca_window_size: int = 9,
+                 tca_use_distance_adj: bool = True,
+                 tca_gamma: float = 0.6,
+                 tca_bias: float = 0.2,
+                 tca_use_norm: bool = True):
         super().__init__()
 
         self.num_class = num_class
@@ -80,20 +87,45 @@ class CLIPVAD(nn.Module):
         self.prompt_postfix = prompt_postfix
         self.device = device
 
-        self.temporal = Transformer(
-            width=visual_width,
-            layers=visual_layers,
-            heads=visual_head,
-            attn_mask=self.build_attention_mask(self.attn_window)
-        )
+        # TCA相关参数
+        self.use_tca = use_tca
+        self.tca_window_size = tca_window_size
+        self.tca_use_distance_adj = tca_use_distance_adj
 
-        width = int(visual_width / 2)
-        self.gc1 = GraphConvolution(visual_width, width, residual=True)
-        self.gc2 = GraphConvolution(width, width, residual=True)
-        self.gc3 = GraphConvolution(visual_width, width, residual=True)
-        self.gc4 = GraphConvolution(width, width, residual=True)
-        self.disAdj = DistanceAdj()
-        self.linear = nn.Linear(visual_width, visual_width)
+        # 时序建模模块 - 根据use_tca选择不同的实现
+        if use_tca:
+            # 使用TCA (Temporal Context Aggregation)
+            self.temporal = TCATransformerEncoder(
+                width=visual_width,
+                layers=visual_layers,
+                heads=visual_head,
+                dropout=0.1,  # 默认dropout
+                window_size=tca_window_size,
+                use_distance_adj=tca_use_distance_adj,
+                gamma=tca_gamma,
+                bias=tca_bias,
+                use_norm=tca_use_norm
+            )
+            print(f"时序建模: 使用TCA (窗口大小={tca_window_size})")
+        else:
+            # 使用原始的Transformer + GCN
+            self.temporal = Transformer(
+                width=visual_width,
+                layers=visual_layers,
+                heads=visual_head,
+                attn_mask=self.build_attention_mask(self.attn_window)
+            )
+            print("时序建模: 使用Transformer + GCN")
+
+            # GCN相关模块（仅在非TCA模式下初始化）
+            width = int(visual_width / 2)
+            self.gc1 = GraphConvolution(visual_width, width, residual=True)
+            self.gc2 = GraphConvolution(width, width, residual=True)
+            self.gc3 = GraphConvolution(visual_width, width, residual=True)
+            self.gc4 = GraphConvolution(width, width, residual=True)
+            self.disAdj = DistanceAdj()
+            self.linear = nn.Linear(visual_width, visual_width)
+
         self.gelu = QuickGELU()
 
         self.mlp1 = nn.Sequential(OrderedDict([
@@ -166,19 +198,26 @@ class CLIPVAD(nn.Module):
         frame_position_embeddings = frame_position_embeddings.permute(1, 0, 2)
         images = images.permute(1, 0, 2) + frame_position_embeddings
 
-        x, _ = self.temporal((images, None))
-        x = x.permute(1, 0, 2)
+        if self.use_tca:
+            # TCA时序建模
+            x = self.temporal(images)  # TCA直接返回处理后的特征
+            x = x.permute(1, 0, 2)  # 转换回 [batch, seq_len, width] 格式
+        else:
+            # 原始的Transformer + GCN时序建模
+            x, _ = self.temporal((images, None))
+            x = x.permute(1, 0, 2)
 
-        adj = self.adj4(x, lengths)
-        disadj = self.disAdj(x.shape[0], x.shape[1])
-        x1_h = self.gelu(self.gc1(x, adj))
-        x2_h = self.gelu(self.gc3(x, disadj))
+            # GCN聚合
+            adj = self.adj4(x, lengths)
+            disadj = self.disAdj(x.shape[0], x.shape[1])
+            x1_h = self.gelu(self.gc1(x, adj))
+            x2_h = self.gelu(self.gc3(x, disadj))
 
-        x1 = self.gelu(self.gc2(x1_h, adj))
-        x2 = self.gelu(self.gc4(x2_h, disadj))
+            x1 = self.gelu(self.gc2(x1_h, adj))
+            x2 = self.gelu(self.gc4(x2_h, disadj))
 
-        x = torch.cat((x1, x2), 2)
-        x = self.linear(x)
+            x = torch.cat((x1, x2), 2)
+            x = self.linear(x)
 
         return x
 

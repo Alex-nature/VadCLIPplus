@@ -13,6 +13,20 @@ parser.add_argument('--prompt-prefix', default=10, type=int)
 parser.add_argument('--prompt-postfix', default=10, type=int)
 parser.add_argument('--classes-num', default=14, type=int)
 
+# TCA (Temporal Context Aggregation) 相关参数
+parser.add_argument('--use-tca', default=False, type=bool,
+                   help='是否使用TCA替代原有的transformer+GCN时序建模')
+parser.add_argument('--tca-window-size', default=9, type=int,
+                   help='TCA滑动窗口大小')
+parser.add_argument('--tca-use-distance-adj', default=True, type=bool,
+                   help='TCA是否使用距离邻接矩阵')
+parser.add_argument('--tca-gamma', default=0.6, type=float,
+                   help='TCA距离衰减参数gamma')
+parser.add_argument('--tca-bias', default=0.2, type=float,
+                   help='TCA距离偏置参数bias')
+parser.add_argument('--tca-use-norm', default=True, type=bool,
+                   help='TCA是否使用归一化')
+
 parser.add_argument('--max-epoch', default=10, type=int)
 parser.add_argument('--model-path', default='model/model_ucf.pth')
 parser.add_argument('--use-checkpoint', default=False, type=bool)
