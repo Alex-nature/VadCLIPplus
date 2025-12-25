@@ -3,3 +3,4 @@ data/XD-Violence
 model/*
 __pycache__/
 *.pyc
+logs/
