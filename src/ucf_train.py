@@ -98,19 +98,20 @@ def train(model, normal_loader, anomaly_loader, testloader, args, label_map, dev
             step += i * normal_loader.batch_size * 2
             if step % 1280 == 0 and step != 0:
                 print('epoch: ', e+1, '| step: ', step, '| loss1: ', loss_total1 / (i+1), '| loss2: ', loss_total2 / (i+1), '| loss3: ', loss3.item())
-                AUC, AP = test(model, testloader, args.visual_length, prompt_text, gt, gtsegments, gtlabels, device)
-                AP = AUC
-
-                if AP > ap_best:
-                    ap_best = AP 
-                    checkpoint = {
-                        'epoch': e,
-                        'model_state_dict': model.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        'ap': ap_best}
-                    torch.save(checkpoint, args.checkpoint_path)
                 
         scheduler.step()
+        AUC, AP = test(model, testloader, args.visual_length, prompt_text, gt, gtsegments, gtlabels, device)
+        AP = AUC
+
+        if AP > ap_best:
+            ap_best = AP 
+            checkpoint = {
+                'epoch': e,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'ap': ap_best}
+            torch.save(checkpoint, args.checkpoint_path)
+                
         
         torch.save(model.state_dict(), 'model/model_cur.pth')
         checkpoint = torch.load(args.checkpoint_path)
