@@ -11,6 +11,7 @@ from ucf_test import test
 from utils.dataset import UCFDataset
 from utils.tools import get_prompt_text, get_batch_label
 import ucf_option
+from utils.logger import start_logging, stop_logging
 
 def CLASM(logits, labels, lengths, device):
     instance_logits = torch.zeros(0).to(device)
@@ -143,5 +144,10 @@ if __name__ == '__main__':
     test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
     model = CLIPVAD(args.classes_num, args.embed_dim, args.visual_length, args.visual_width, args.visual_head, args.visual_layers, args.attn_window, args.prompt_prefix, args.prompt_postfix, device)
-
-    train(model, normal_loader, anomaly_loader, test_loader, args, label_map, device)
+    # start logging to file (captures stdout/stderr)
+    log_path = start_logging()
+    try:
+        train(model, normal_loader, anomaly_loader, test_loader, args, label_map, device)
+    finally:
+        # ensure logging is stopped and flushed
+        stop_logging()
