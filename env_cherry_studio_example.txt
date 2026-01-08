@@ -1,0 +1,13 @@
+# Cherry Studio API Configuration Example
+# 复制此文件为 .env 并填入您的实际Cherry Studio API密钥
+
+CHERRY_STUDIO_API_KEY=your-cherry-studio-api-key-here
+
+# 如何获取Cherry Studio API密钥：
+# 1. 打开Cherry Studio应用
+# 2. 进入设置 -> API Keys
+# 3. 创建或复制现有的API密钥
+# 4. 将上面的 your-cherry-studio-api-key-here 替换为实际的密钥
+
+# 示例格式：
+# CHERRY_STUDIO_API_KEY=sk-cs-1234567890abcdef...

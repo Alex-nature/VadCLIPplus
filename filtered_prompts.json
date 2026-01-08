@@ -1,0 +1,247 @@
+{
+  "metadata": {
+    "description": "Filtered text prompts based on CLIP similarity",
+    "source_file": "enhanced_prompts.json",
+    "clip_model": "ViT-B/16",
+    "total_categories": 13,
+    "total_phrases_selected": 65,
+    "top_k_per_category": 5,
+    "filter_method": "cosine_similarity"
+  },
+  "categories": {
+    "abuse": {
+      "phrases": [
+        "Child being shaken or yanked",
+        "Unwanted touching despite resistance",
+        "Multiple attackers surrounding one person",
+        "Aggressive face-to-face intimidation",
+        "Assailant restraining wrists behind back"
+      ],
+      "similarities": [
+        0.8824803233146667,
+        0.8722469806671143,
+        0.8635823726654053,
+        0.8598339557647705,
+        0.858502984046936
+      ],
+      "original_count": 20,
+      "selected_count": 5
+    },
+    "arrest": {
+      "phrases": [
+        "Suspect forced to the ground",
+        "Prolonged confrontation with law enforcement",
+        "Hands placed behind back, cuffed",
+        "Immediate compliance after officer commands",
+        "Suspect pulled from a crowd"
+      ],
+      "similarities": [
+        0.8899551630020142,
+        0.8855445981025696,
+        0.8802781701087952,
+        0.8714771866798401,
+        0.8706523776054382
+      ],
+      "original_count": 20,
+      "selected_count": 5
+    },
+    "arson": {
+      "phrases": [
+        "Small flame grows into blaze",
+        "Person setting furniture alight",
+        "Person igniting flammable material",
+        "Fire damage rapidly expanding area",
+        "Fire started in parked vehicle"
+      ],
+      "similarities": [
+        0.8656980991363525,
+        0.8282214403152466,
+        0.8268190026283264,
+        0.8245193362236023,
+        0.8221486806869507
+      ],
+      "original_count": 20,
+      "selected_count": 5
+    },
+    "assault": {
+      "phrases": [
+        "Person attacking with blunt object",
+        "Fight escalating from verbal dispute",
+        "Violent grappling and forced restraint",
+        "Sudden physical attack in crowd",
+        "Bystander intervening in violent scuffle"
+      ],
+      "similarities": [
+        0.8719819784164429,
+        0.8684303164482117,
+        0.8666396141052246,
+        0.8586204648017883,
+        0.8529533743858337
+      ],
+      "original_count": 20,
+      "selected_count": 5
+    },
+    "burglary": {
+      "phrases": [
+        "Backpack filled with stolen items",
+        "Multiple occupants fleeing the scene",
+        "Property damage near entry point",
+        "Alarm triggered during unauthorized entry",
+        "Valuables stuffed into duffel bag"
+      ],
+      "similarities": [
+        0.6611494421958923,
+        0.6409993171691895,
+        0.6338421106338501,
+        0.6261074542999268,
+        0.622947096824646
+      ],
+      "original_count": 20,
+      "selected_count": 5
+    },
+    "explosion": {
+      "phrases": [
+        "Smoke billowing from sudden rupture",
+        "Crowd recoils from sudden blast",
+        "Vehicle engulfed in flames instantly",
+        "Loud flare followed by thick smoke",
+        "Structure fragments collapsing after blast"
+      ],
+      "similarities": [
+        0.8496588468551636,
+        0.8265970349311829,
+        0.8241595029830933,
+        0.81409752368927,
+        0.8102416396141052
+      ],
+      "original_count": 20,
+      "selected_count": 5
+    },
+    "fighting": {
+      "phrases": [
+        "People rushing in to break it up",
+        "Kicking and striking in rapid succession",
+        "Victim stumbling after heavy impact",
+        "Forceful headlocks and chokehold attempts",
+        "Objects knocked over amid commotion"
+      ],
+      "similarities": [
+        0.8819241523742676,
+        0.877936065196991,
+        0.8521925210952759,
+        0.8380702137947083,
+        0.8380051851272583
+      ],
+      "original_count": 20,
+      "selected_count": 5
+    },
+    "roadAccidents": {
+      "phrases": [
+        "Traffic halted by severe wreck",
+        "Vehicle hits debris and swerves",
+        "Head-on crash on two-lane road",
+        "Bus collides with parked vehicles",
+        "Car hits roadside barrier violently"
+      ],
+      "similarities": [
+        0.8899195194244385,
+        0.8516641855239868,
+        0.8435112237930298,
+        0.8399242758750916,
+        0.8391945362091064
+      ],
+      "original_count": 20,
+      "selected_count": 5
+    },
+    "robbery": {
+      "phrases": [
+        "Assailant threatens with visible weapon",
+        "Shopper chased and bag snatched",
+        "Victim raises hands in fear",
+        "Suspect demands phone and keys",
+        "Masked person forces valuables from victim"
+      ],
+      "similarities": [
+        0.8440344929695129,
+        0.837864100933075,
+        0.8369722366333008,
+        0.8354564309120178,
+        0.8199025988578796
+      ],
+      "original_count": 20,
+      "selected_count": 5
+    },
+    "shooting": {
+      "phrases": [
+        "Weapon drawn and trigger pulled",
+        "Multiple rounds fired in quick succession",
+        "People diving for cover suddenly",
+        "Victim collapses after being hit",
+        "Police engage armed individual nearby"
+      ],
+      "similarities": [
+        0.8716987371444702,
+        0.8452298045158386,
+        0.8198227882385254,
+        0.8195757865905762,
+        0.819450855255127
+      ],
+      "original_count": 20,
+      "selected_count": 5
+    },
+    "shoplifting": {
+      "phrases": [
+        "Bypassing checkout with unpaid goods",
+        "Pocketing small items from shelves",
+        "Rapidly grabbing goods and fleeing",
+        "Distracting staff while taking items",
+        "Handing unpaid items to accomplice"
+      ],
+      "similarities": [
+        0.8580527305603027,
+        0.8362706899642944,
+        0.8300083875656128,
+        0.820530116558075,
+        0.8201823234558105
+      ],
+      "original_count": 20,
+      "selected_count": 5
+    },
+    "stealing": {
+      "phrases": [
+        "Passing goods to an accomplice",
+        "Pocketing goods while browsing aisles",
+        "Snatching items from another shopper",
+        "Exiting store without paying",
+        "Forcing open a donation box"
+      ],
+      "similarities": [
+        0.8541809916496277,
+        0.8486191630363464,
+        0.8465666770935059,
+        0.8442877531051636,
+        0.842448890209198
+      ],
+      "original_count": 20,
+      "selected_count": 5
+    },
+    "vandalism": {
+      "phrases": [
+        "Defacing public property with markers",
+        "Pouring liquid to ruin surfaces",
+        "Smashing windows with a blunt object",
+        "Tearing down posters and notices",
+        "Damaging a security camera housing"
+      ],
+      "similarities": [
+        0.872224748134613,
+        0.8107017278671265,
+        0.785196840763092,
+        0.7789403200149536,
+        0.7767434120178223
+      ],
+      "original_count": 20,
+      "selected_count": 5
+    }
+  }
+}

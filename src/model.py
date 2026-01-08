@@ -114,8 +114,16 @@ class CLIPVAD(nn.Module):
 
         self.frame_position_embeddings = nn.Embedding(visual_length, visual_width)
         self.text_prompt_embeddings = nn.Embedding(77, self.embed_dim)
+        # fusion MLP to combine visual and t_guided (concat -> project back to visual_width)
+        self.fusion_mlp = nn.Sequential(OrderedDict([
+            ("f_fc1", nn.Linear(visual_width + self.embed_dim, visual_width * 2)),
+            ("f_gelu", QuickGELU()),
+            ("f_fc2", nn.Linear(visual_width * 2, visual_width))
+        ]))
 
         self.initialize_parameters()
+        # per-class learnable alpha (unconstrained, apply sigmoid to map to (0,1))
+        self.alpha_param = nn.Parameter(torch.full((self.num_class,), 0.7))
 
     def initialize_parameters(self):
         nn.init.normal_(self.text_prompt_embeddings.weight, std=0.01)
@@ -199,26 +207,187 @@ class CLIPVAD(nn.Module):
 
         return text_features
 
+    def encode_category_embeddings(self, text):
+        """
+        生成类别的CLIP embeddings，并使用过滤后的短语进行增强
+
+        Args:
+            text: 类别名称列表，如['normal', 'abuse', 'arrest', ...]
+
+        Returns:
+            类别embeddings (num_classes, embed_dim)
+        """
+        # 首先生成基础的类别embeddings
+        category_tokens = clip.tokenize(text).to(self.device)
+        word_embeddings = self.clipmodel.encode_token(category_tokens)
+
+        # 创建简单的text_embeddings：只包含[CLS] + 词嵌入
+        batch_size = len(text)
+        text_embeddings = torch.zeros(batch_size, 77, self.embed_dim).to(self.device)
+        text_tokens = torch.zeros(batch_size, 77).to(self.device).long()
+
+        for i in range(batch_size):
+            # [CLS] token embedding
+            text_embeddings[i, 0] = word_embeddings[i, 0]  # BOS token
+
+            # 找到实际文本的结束位置
+            eos_pos = (category_tokens[i] == 49407).nonzero(as_tuple=True)[0]  # EOS token
+            if len(eos_pos) > 0:
+                text_len = eos_pos[0].item()
+            else:
+                text_len = min(75, (category_tokens[i] != 0).sum().item())
+
+            # 复制词嵌入到对应位置
+            text_embeddings[i, 1:text_len] = word_embeddings[i, 1:text_len]
+            text_tokens[i, :text_len] = category_tokens[i, :text_len]
+
+            # EOS token
+            text_embeddings[i, text_len] = word_embeddings[i, text_len]
+            text_tokens[i, text_len] = category_tokens[i, text_len]
+
+        with torch.no_grad():
+            category_embeddings = self.clipmodel.encode_text(text_embeddings, text_tokens)
+            category_embeddings = category_embeddings / category_embeddings.norm(dim=-1, keepdim=True)
+
+        # 使用过滤后的短语增强异常类别的embeddings
+        enhanced_embeddings = self.enhance_embeddings_with_phrases(category_embeddings, text)
+
+        return enhanced_embeddings
+
+    def enhance_embeddings_with_phrases(self, category_embeddings, text):
+        """
+        使用过滤后的短语增强类别embeddings
+
+        Args:
+            category_embeddings: 基础类别embeddings (num_classes, embed_dim)
+            text: 类别名称列表
+
+        Returns:
+            增强后的embeddings
+        """
+        enhanced_embeddings = category_embeddings.clone()
+
+        # 尝试加载过滤后的短语数据
+        try:
+            import json
+            import os
+            json_path = os.path.join(os.path.dirname(__file__), '..', 'filtered_prompts.json')
+            if os.path.exists(json_path):
+                with open(json_path, 'r', encoding='utf-8') as f:
+                    filtered_data = json.load(f)
+
+                categories_data = filtered_data.get('categories', {})
+
+                # 为每个类别进行增强（跳过normal类）
+                for i, category_name in enumerate(text):
+                    if category_name.lower() == 'normal':
+                        continue  # 不增强normal类
+
+                    if category_name in categories_data:
+                        # 获取该类别的过滤后短语
+                        phrases = categories_data[category_name]['phrases']
+                        if phrases:
+                            # 为短语生成embeddings
+                            phrase_tokens = clip.tokenize(phrases).to(self.device)
+                            with torch.no_grad():
+                                # 为短语创建简单的text_embeddings
+                                num_phrases = len(phrases)
+                                phrase_text_embeddings = torch.zeros(num_phrases, 77, self.embed_dim).to(self.device)
+                                phrase_text_tokens = torch.zeros(num_phrases, 77).to(self.device).long()
+
+                                # 获取短语的词嵌入
+                                phrase_word_embeddings = self.clipmodel.encode_token(phrase_tokens)
+
+                                for j in range(num_phrases):
+                                    # [CLS] token
+                                    phrase_text_embeddings[j, 0] = phrase_word_embeddings[j, 0]
+
+                                    # 找到短语结束位置
+                                    eos_pos = (phrase_tokens[j] == 49407).nonzero(as_tuple=True)[0]
+                                    if len(eos_pos) > 0:
+                                        phrase_len = eos_pos[0].item()
+                                    else:
+                                        phrase_len = min(75, (phrase_tokens[j] != 0).sum().item())
+
+                                    # 复制词嵌入
+                                    phrase_text_embeddings[j, 1:phrase_len] = phrase_word_embeddings[j, 1:phrase_len]
+                                    phrase_text_tokens[j, :phrase_len] = phrase_tokens[j, :phrase_len]
+
+                                    # EOS token
+                                    phrase_text_embeddings[j, phrase_len] = phrase_word_embeddings[j, phrase_len]
+                                    phrase_text_tokens[j, phrase_len] = phrase_tokens[j, phrase_len]
+
+                                # 编码短语
+                                phrase_embeddings = self.clipmodel.encode_text(phrase_text_embeddings, phrase_text_tokens)
+                                phrase_embeddings = phrase_embeddings / phrase_embeddings.norm(dim=-1, keepdim=True)
+
+                            # 使用 phrase_embeddings 与 category_embedding 的余弦相似度作为权重
+                            # phrase_embeddings: (num_phrases, D)
+                            # category_embeddings[i]: (D,)
+                            # 注意 dtype/device 对齐
+                            cat_emb = category_embeddings[i].to(phrase_embeddings.dtype)
+                            # similarities by cosine (since both are normalized)
+                            sims = torch.matmul(phrase_embeddings, cat_emb)  # (num_phrases,)
+                            weights = torch.softmax(sims, dim=0)  # (num_phrases,)
+
+                            # 加权组合短语embeddings
+                            weighted_phrase_emb = torch.sum(weights.unsqueeze(-1) * phrase_embeddings, dim=0)
+
+                            # 使用可学习的 alpha（sigmoid 参数化保证在 (0,1)）
+                            alpha_raw = self.alpha_param[i] if hasattr(self, 'alpha_param') else torch.tensor(0.7, device=weighted_phrase_emb.device)
+                            alpha = torch.sigmoid(alpha_raw).to(weighted_phrase_emb.dtype)
+
+                            # 融合并归一化
+                            enhanced = alpha * category_embeddings[i] + (1.0 - alpha) * weighted_phrase_emb
+                            enhanced_embeddings[i] = enhanced / (enhanced.norm(dim=-1, keepdim=True) + 1e-12)
+
+        except Exception as e:
+            print(f"Warning: Failed to load enhanced phrases: {e}")
+            # 如果加载失败，返回原始的类别embeddings
+            pass
+
+        return enhanced_embeddings
+
     def forward(self, visual, padding_mask, text, lengths):
         visual_features = self.encode_video(visual, padding_mask, lengths)
-        logits1 = self.classifier(visual_features + self.mlp2(visual_features))
 
         text_features_ori = self.encode_textprompt(text)
-
+        # 使用text_feature作为后续操作的变量
         text_features = text_features_ori
-        logits_attn = logits1.permute(0, 2, 1)
-        visual_attn = logits_attn @ visual_features
-        visual_attn = visual_attn / visual_attn.norm(dim=-1, keepdim=True)
-        visual_attn = visual_attn.expand(visual_attn.shape[0], text_features_ori.shape[0], visual_attn.shape[2])
-        text_features = text_features_ori.unsqueeze(0)
-        text_features = text_features.expand(visual_attn.shape[0], text_features.shape[1], text_features.shape[2])
-        text_features = text_features + visual_attn
-        text_features = text_features + self.mlp1(text_features)
 
-        visual_features_norm = visual_features / visual_features.norm(dim=-1, keepdim=True)
-        text_features_norm = text_features / text_features.norm(dim=-1, keepdim=True)
-        text_features_norm = text_features_norm.permute(0, 2, 1)
-        logits2 = visual_features_norm @ text_features_norm.type(visual_features_norm.dtype) / 0.07
+        # Step 1: compute t_guided using class-text -> visual conditional weighting
+        # visual_features: (B, T, V)
+        # text_features: (C, D)
+        # produce w: (B, T, C) and t_guided: (B, T, D)
+        tau = 0.07
+        # L2 normalize visual and text features (per-vector)
+        visual_norm = visual_features / (visual_features.norm(dim=-1, keepdim=True) + 1e-12)
+        text_feat = text_features  # (C, D)
+        text_norm = text_feat / (text_feat.norm(dim=-1, keepdim=True) + 1e-12)
+
+        # ensure dtype/device alignment
+        text_norm = text_norm.to(visual_norm.dtype)
+
+        # logits: (B, T, C)
+        logits_w = torch.matmul(visual_norm, text_norm.T) / tau
+        w = torch.softmax(logits_w, dim=-1)  # (B, T, C)
+
+        # weighted sum to produce text guidance per timestep: (B, T, D)
+        t_guided = torch.matmul(w, text_feat.to(visual_norm.dtype))
+
+        # Fuse visual and t_guided via concat + fusion_mlp
+        # visual_features: (B, T, V), t_guided: (B, T, D) where D==V
+        multimodal = torch.cat([visual_features, t_guided], dim=-1)  # (B, T, V+D)
+        fused = self.fusion_mlp(multimodal)  # (B, T, V)
+
+        logits1 = self.classifier(fused + self.mlp2(fused))
+
+        # text参数就是类别名称列表，如['normal', 'abuse', 'arrest', ...]
+        category_embeddings = self.encode_category_embeddings(text)
+
+        # use fused multimodal features for alignment with category embeddings
+        fused_norm = fused / (fused.norm(dim=-1, keepdim=True) + 1e-12)
+        logits2 = fused_norm @ category_embeddings.type(fused_norm.dtype).T / 0.07
 
         return text_features_ori, logits1, logits2
     
