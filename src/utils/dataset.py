@@ -58,7 +58,7 @@ class XDDataset(data.Dataset):
         original_path = self.df.loc[index]['path']
         if original_path.startswith('/home/xbgydx/Desktop/XDTrainClipFeatures/'):
             # Replace with the correct local path relative to project root
-            relative_path = original_path.replace('/home/xbgydx/Desktop/XDTrainClipFeatures/', 'data/CLIP_Features/XD-Violence/XDTrainClipFeatures/XDTrainClipFeatures/')
+            relative_path = original_path.replace('/home/xbgydx/Desktop/XDTrainClipFeatures/', 'data/CLIP_Features/XD-Violence/XDTrainClipFeatures/')
             # Use os.path.join to handle different OS path separators
             clip_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), relative_path)
         elif original_path.startswith('/home/xbgydx/Desktop/XDTestClipFeatures/'):
