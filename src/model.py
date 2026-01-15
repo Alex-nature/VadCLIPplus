@@ -7,6 +7,9 @@ from torch import nn
 from clip import clip
 from utils.layers import GraphConvolution, DistanceAdj
 
+from utils.adapter_modules import SimpleAdapter, SimpleProj
+from utils.descriptions import DESCRIPTIONS_ORI, DESCRIPTIONS_ORI_XD
+
 class LayerNorm(nn.LayerNorm):
 
     def forward(self, x: torch.Tensor):
@@ -55,6 +58,55 @@ class Transformer(nn.Module):
 
     def forward(self, x: torch.Tensor):
         return self.resblocks(x)
+    
+class CLIP_Adapter(nn.Module):
+    def __init__(self, clipmodel, device, text_adapt_until=3, t_w=0.1):
+        super(CLIP_Adapter, self).__init__()
+        self.clipmodel = clipmodel
+        self.text_adapt_until = text_adapt_until
+        self.t_w = t_w
+        self.device = device
+
+        self.text_adapter = nn.ModuleList(
+            [SimpleAdapter(512, 512) for _ in range(text_adapt_until)] +
+            [SimpleProj(512, 512, relu=True)]
+        )
+
+        self._init_weights_()
+
+    def _init_weights_(self):
+        for p in self.text_adapter.parameters():
+            if p.dim() > 1:
+                nn.init.xavier_uniform_(p)
+
+    def encode_text(self, text, adapt_text=True):
+        if not adapt_text:
+            return self.clipmodel.encode_text(text)
+
+        cast_dtype = self.clipmodel.token_embedding.weight.dtype
+
+        x = self.clipmodel.token_embedding(text).to(cast_dtype) 
+
+        x = x + self.clipmodel.positional_embedding.to(cast_dtype)
+        x = x.permute(1, 0, 2) 
+
+        for i in range(len(self.clipmodel.transformer.resblocks)):
+            x = self.clipmodel.transformer.resblocks[i](x)
+            if i < self.text_adapt_until:
+                adapt_out = self.text_adapter[i](x)
+                adapt_out = (
+                    adapt_out * x.norm(dim=-1, keepdim=True) /
+                    (adapt_out.norm(dim=-1, keepdim=True) + 1e-6)
+                )
+                x = self.t_w * adapt_out + (1 - self.t_w) * x
+
+        x = x.permute(1, 0, 2)
+        x = self.clipmodel.ln_final(x)
+        eot_indices = text.argmax(dim=-1)
+        x = x[torch.arange(x.shape[0]), eot_indices]
+        x = self.text_adapter[-1](x)
+
+        return x
 
 
 class CLIPVAD(nn.Module):
@@ -68,6 +120,7 @@ class CLIPVAD(nn.Module):
                  attn_window: int,
                  prompt_prefix: int,
                  prompt_postfix: int,
+                 args,
                  device):
         super().__init__()
 
@@ -114,6 +167,21 @@ class CLIPVAD(nn.Module):
 
         self.frame_position_embeddings = nn.Embedding(visual_length, visual_width)
         self.text_prompt_embeddings = nn.Embedding(77, self.embed_dim)
+
+        self.clip_adapter = CLIP_Adapter(self.clipmodel, self.device, args.text_adapt_until, args.t_w)
+        self._text_features_cache = None
+
+        self.tv_attn = nn.MultiheadAttention(embed_dim=visual_width, num_heads=visual_head, batch_first=True)
+        self.tv_ln_t = LayerNorm(visual_width)
+        self.tv_ln_v = LayerNorm(visual_width)
+        self.alpha_tv = nn.Parameter(torch.tensor(0.1))  # 融合强度，可学/可固定
+        self.tv_mlp = nn.Sequential(
+            nn.Linear(visual_width, visual_width * 4),
+            QuickGELU(),
+            nn.Linear(visual_width * 4, visual_width),
+        )
+
+
 
         self.initialize_parameters()
 
@@ -182,38 +250,63 @@ class CLIPVAD(nn.Module):
 
         return x
 
-    def encode_textprompt(self, text):
-        word_tokens = clip.tokenize(text).to(self.device)
-        word_embedding = self.clipmodel.encode_token(word_tokens)
-        text_embeddings = self.text_prompt_embeddings(torch.arange(77).to(self.device)).unsqueeze(0).repeat([len(text), 1, 1])
-        text_tokens = torch.zeros(len(text), 77).to(self.device)
+    def get_text_features(self, text):
+        if not self.training and self._text_features_cache is not None:
+            return self._text_features_cache
 
-        for i in range(len(text)):
-            ind = torch.argmax(word_tokens[i], -1)
-            text_embeddings[i, 0] = word_embedding[i, 0]
-            text_embeddings[i, self.prompt_prefix + 1: self.prompt_prefix + ind] = word_embedding[i, 1: ind]
-            text_embeddings[i, self.prompt_prefix + ind + self.prompt_postfix] = word_embedding[i, ind]
-            text_tokens[i, self.prompt_prefix + ind + self.prompt_postfix] = word_tokens[i, ind]
+        category_features = []
+        if len(text) == 14:
+            DESCRIPTIONS = DESCRIPTIONS_ORI
+        else:
+            DESCRIPTIONS = DESCRIPTIONS_ORI_XD
+        for class_name, descriptions in DESCRIPTIONS.items():
+            tokens = clip.tokenize(descriptions).to(self.device)
 
-        text_features = self.clipmodel.encode_text(text_embeddings, text_tokens)
+            text_features = self.clip_adapter.encode_text(tokens)
+            mean_feature = text_features.mean(dim=0)
+            mean_feature = mean_feature / mean_feature.norm()
+            category_features.append(mean_feature)
+        text_features_ori = torch.stack(category_features, dim=0)
 
-        return text_features
+        if not self.training:
+            self._text_features_cache = text_features_ori
+            
+        return text_features_ori
+
 
     def forward(self, visual, padding_mask, text, lengths):
         visual_features = self.encode_video(visual, padding_mask, lengths)
         logits1 = self.classifier(visual_features + self.mlp2(visual_features))
 
-        text_features_ori = self.encode_textprompt(text)
+        text_features_ori = self.get_text_features(text)
 
         text_features = text_features_ori
-        logits_attn = logits1.permute(0, 2, 1)
-        visual_attn = logits_attn @ visual_features
-        visual_attn = visual_attn / visual_attn.norm(dim=-1, keepdim=True)
-        visual_attn = visual_attn.expand(visual_attn.shape[0], text_features_ori.shape[0], visual_attn.shape[2])
-        text_features = text_features_ori.unsqueeze(0)
-        text_features = text_features.expand(visual_attn.shape[0], text_features.shape[1], text_features.shape[2])
-        text_features = text_features + visual_attn
-        text_features = text_features + self.mlp1(text_features)
+        
+        # 1) 基础特征准备
+        text_tokens = text_features_ori.unsqueeze(0).expand(visual_features.size(0), -1, -1)  # [B,C,D]
+
+        V = self.tv_ln_v(visual_features)                           # [B,T,D]
+        T = self.tv_ln_t(text_tokens)                               # [B,C,D]
+
+        # 2) 构造“检测先验”时间权重（不要 raw logits）
+        # logits1: [B,T,1] -> [B,T]
+        w = logits1.squeeze(-1)
+        w = w.detach()  # 推荐：stop-grad，避免分类损失扭曲检测分支
+        w = torch.softmax(w / 1.0, dim=1)                           # [B,T]  温度可调
+        # 方案：把权重变成一个 additive bias，加到 attention logits 上
+        # MultiheadAttention 不直接支持自定义 bias，这里用一个简单 gating 方式：
+
+        # 3) Text -> Video cross-attn：每个类别从视频里读证据
+        ctx, _ = self.tv_attn(query=T, key=V, value=V, need_weights=False)  # ctx: [B,C,D]
+
+        # 4) 用检测先验做 gating（把更异常的帧证据放大）
+        # 一个简化做法：用 w 生成视频级门控标量 g（每个视频一个），也可以做每类不同的g
+        g = (w.max(dim=1).values).unsqueeze(-1).unsqueeze(-1)       # [B,1,1]  也可用 mean/topkmean
+        ctx = ctx * (1.0 + g)
+
+        # 5) 融合到文本（类别特定）
+        text_features = text_tokens + self.alpha_tv * ctx
+        text_features = text_features + self.tv_mlp(text_features)  # [B,C,D]
 
         visual_features_norm = visual_features / visual_features.norm(dim=-1, keepdim=True)
         text_features_norm = text_features / text_features.norm(dim=-1, keepdim=True)
@@ -221,4 +314,3 @@ class CLIPVAD(nn.Module):
         logits2 = visual_features_norm @ text_features_norm.type(visual_features_norm.dtype) / 0.07
 
         return text_features_ori, logits1, logits2
-    
