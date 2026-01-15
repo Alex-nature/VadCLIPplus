@@ -44,14 +44,20 @@ def get_prompt_text(label_map: dict):
     return prompt_text
 
 def get_batch_mask(lengths, maxlen):
+    """
+    lengths: [B]  tensor (CPU/GPU均可)
+    return:  [B, maxlen]  bool mask, True 表示 padding 位置
+    """
+    lengths = lengths.to(dtype=torch.long)
     batch_size = lengths.shape[0]
-    mask = torch.empty(batch_size, maxlen)
-    mask.fill_(0)
-    for i in range(batch_size):
-        if lengths[i] < maxlen:
-            mask[i, lengths[i]:maxlen] = 1
-    
-    return mask.bool()
+
+    # 保证 mask 在 lengths 同 device 上
+    mask = torch.zeros(batch_size, maxlen, device=lengths.device, dtype=torch.bool)
+
+    # 向量化构造：idx >= length => padding
+    idx = torch.arange(maxlen, device=lengths.device).unsqueeze(0)  # [1, maxlen]
+    mask = idx >= lengths.unsqueeze(1)                               # [B, maxlen]
+    return mask
 
 def random_extract(feat, t_max):
    r = np.random.randint(feat.shape[0] - t_max)

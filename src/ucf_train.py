@@ -38,6 +38,31 @@ def CLAS2(logits, labels, lengths, device):
     clsloss = F.binary_cross_entropy(instance_logits, labels)
     return clsloss
 
+def L_sepV_from_aux(aux, labels, margin=0.2):
+    """
+    labels: [B,C] 第一列为normal，异常样本满足 labels[:,0]==0
+    aux: dict from model forward
+    """
+    V  = aux["visual_features"]   # [B,T,D]
+    w  = aux["w"]                 # [B,T]
+    wn = aux["wn"]                # [B,T]
+
+    # 异常样本索引（标签：第一列normal）
+    is_anom = (1.0 - labels[:, 0]).float()                 # [B]
+    idx = (is_anom > 0.5).nonzero(as_tuple=True)[0]        # anomaly indices
+
+    if idx.numel() == 0:
+        return V.new_tensor(0.0)
+
+    V, w, wn = V[idx], w[idx], wn[idx]
+
+    p_ab = torch.einsum('bt,btd->bd', w, V)                # [B,D]
+    p_no = torch.einsum('bt,btd->bd', wn, V)               # [B,D]
+    cos  = F.cosine_similarity(p_ab, p_no, dim=-1)         # [B]
+
+    return F.relu(margin + cos).mean()
+
+
 def train(model, normal_loader, anomaly_loader, testloader, args, label_map, device):
     model.to(device)
     gt = np.load(args.gt_path)
@@ -63,6 +88,7 @@ def train(model, normal_loader, anomaly_loader, testloader, args, label_map, dev
         model.train()
         loss_total1 = 0
         loss_total2 = 0
+        loss_total_sepV = 0
         normal_iter = iter(normal_loader)
         anomaly_iter = iter(anomaly_loader)
         for i in range(min(len(normal_loader), len(anomaly_loader))):
@@ -75,7 +101,7 @@ def train(model, normal_loader, anomaly_loader, testloader, args, label_map, dev
             feat_lengths = torch.cat([normal_lengths, anomaly_lengths], dim=0).to(device)
             text_labels = get_batch_label(text_labels, prompt_text, label_map).to(device)
 
-            text_features, logits1, logits2 = model(visual_features, None, prompt_text, feat_lengths) 
+            text_features, logits1, logits2, aux = model(visual_features, None, prompt_text, feat_lengths)
             #loss1
             loss1 = CLAS2(logits1, text_labels, feat_lengths, device) 
             loss_total1 += loss1.item()
@@ -90,15 +116,27 @@ def train(model, normal_loader, anomaly_loader, testloader, args, label_map, dev
                 loss3 += torch.abs(text_feature_normal @ text_feature_abr)
             loss3 = loss3 / 13 * 1e-1
 
-            loss = loss1 + loss2 + loss3
+            # === 新增：策略2 L_sepV（只对异常样本）===
+            eta = 0.1
+            loss_sepV = L_sepV_from_aux(aux, text_labels, margin=0.2)
+            loss_total_sepV += loss_sepV.item()
+
+            # ================================================
+            loss = loss1 + loss2 + loss3 + eta * loss_sepV
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             step += i * normal_loader.batch_size * 2
             if step % 1280 == 0 and step != 0:
-                print('epoch: ', e+1, '| step: ', step, '| loss1: ', loss_total1 / (i+1), '| loss2: ', loss_total2 / (i+1), '| loss3: ', loss3.item())
-                
+                print(  'epoch: ', e+1,
+                        '| step: ', step,
+                        '| loss1: ', loss_total1 / (i+1),
+                        '| loss2: ', loss_total2 / (i+1),
+                        '| loss3: ', loss3.item(),
+                        '| sepV: ', loss_total_sepV / (i+1),
+                        '| eta*sepV: ', eta * (loss_total_sepV / (i+1))
+                    )
         scheduler.step()
         AUC, AP = test(model, testloader, args.visual_length, prompt_text, gt, gtsegments, gtlabels, device)
         AP = AUC
@@ -112,7 +150,6 @@ def train(model, normal_loader, anomaly_loader, testloader, args, label_map, dev
                 'ap': ap_best}
             torch.save(checkpoint, args.checkpoint_path)
                 
-        
         torch.save(model.state_dict(), 'model/model_cur.pth')
         checkpoint = torch.load(args.checkpoint_path)
         model.load_state_dict(checkpoint['model_state_dict'])

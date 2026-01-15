@@ -7,6 +7,7 @@ from torch import nn
 from clip import clip
 from utils.layers import GraphConvolution, DistanceAdj
 
+from utils.tools import get_batch_mask
 from utils.adapter_modules import SimpleAdapter, SimpleProj
 from utils.descriptions import DESCRIPTIONS_ORI, DESCRIPTIONS_ORI_XD
 
@@ -275,42 +276,76 @@ class CLIPVAD(nn.Module):
 
 
     def forward(self, visual, padding_mask, text, lengths):
-        visual_features = self.encode_video(visual, padding_mask, lengths)
-        logits1 = self.classifier(visual_features + self.mlp2(visual_features))
+        visual_features = self.encode_video(visual, padding_mask, lengths)          # [B,T,D]
+        logits1 = self.classifier(visual_features + self.mlp2(visual_features))     # [B,T,1]
 
-        text_features_ori = self.get_text_features(text)
+        B, T, D = visual_features.shape
+        lengths_t = torch.as_tensor(lengths, device=visual_features.device, dtype=torch.long)
+        key_padding_mask = get_batch_mask(lengths_t, T).to(visual_features.device)  # [B,T] True=pad
 
-        text_features = text_features_ori
-        
-        # 1) 基础特征准备
-        text_tokens = text_features_ori.unsqueeze(0).expand(visual_features.size(0), -1, -1)  # [B,C,D]
+        text_features_ori = self.get_text_features(text)                            # [C,D]
+        text_tokens = text_features_ori.unsqueeze(0).expand(B, -1, -1)              # [B,C,D]
 
-        V = self.tv_ln_v(visual_features)                           # [B,T,D]
-        T = self.tv_ln_t(text_tokens)                               # [B,C,D]
+        # =========================================================
+        # 策略1：正常原型消除 + 残差放大（对 visual_features 做增强）
+        # =========================================================
+        tau_w = 1.0
+        gamma = 0.5
 
-        # 2) 构造“检测先验”时间权重（不要 raw logits）
-        # logits1: [B,T,1] -> [B,T]
-        w = logits1.squeeze(-1)
-        w = w.detach()  # 推荐：stop-grad，避免分类损失扭曲检测分支
-        w = torch.softmax(w / 1.0, dim=1)                           # [B,T]  温度可调
-        # 方案：把权重变成一个 additive bias，加到 attention logits 上
-        # MultiheadAttention 不直接支持自定义 bias，这里用一个简单 gating 方式：
+        # w: 异常时间分布（mask + detach）
+        w = logits1.squeeze(-1).detach()                                            # [B,T]
+        w = w.masked_fill(key_padding_mask, float('-inf'))                          # pad -> -inf
+        w = torch.softmax(w / tau_w, dim=1)                                         # [B,T]
 
-        # 3) Text -> Video cross-attn：每个类别从视频里读证据
-        ctx, _ = self.tv_attn(query=T, key=V, value=V, need_weights=False)  # ctx: [B,C,D]
+        # wn: 正常时间分布（mask掉padding并归一化）
+        wn = (1.0 - w)                                                              # [B,T]
+        wn = wn.masked_fill(key_padding_mask, 0.0)                                  # pad -> 0
+        wn = wn / (wn.sum(dim=1, keepdim=True) + 1e-6)                              # [B,T]
 
-        # 4) 用检测先验做 gating（把更异常的帧证据放大）
-        # 一个简化做法：用 w 生成视频级门控标量 g（每个视频一个），也可以做每类不同的g
-        g = (w.max(dim=1).values).unsqueeze(-1).unsqueeze(-1)       # [B,1,1]  也可用 mean/topkmean
+        # p_no: 正常原型
+        p_no = torch.einsum('bt,btd->bd', wn, visual_features)                       # [B,D]
+
+        # visual_features_enh: 残差增强
+        visual_features_enh = visual_features + gamma * (visual_features - p_no.unsqueeze(1))  # [B,T,D]
+
+        # =========================================================
+        # Cross-Attention（用增强后的视觉特征 + key_padding_mask）
+        # =========================================================
+        V = self.tv_ln_v(visual_features_enh)                                        # [B,T,D]
+        Tt = self.tv_ln_t(text_tokens)                                               # [B,C,D]
+
+        ctx, _ = self.tv_attn(
+            query=Tt, key=V, value=V,
+            key_padding_mask=key_padding_mask,
+            need_weights=False
+        )                                                                            # [B,C,D]
+
+        # （可选）你原来的 gating：只放大，不改变关注时序
+        g = (w.max(dim=1).values).unsqueeze(-1).unsqueeze(-1)                        # [B,1,1]
         ctx = ctx * (1.0 + g)
 
-        # 5) 融合到文本（类别特定）
+        # 文本融合
         text_features = text_tokens + self.alpha_tv * ctx
-        text_features = text_features + self.tv_mlp(text_features)  # [B,C,D]
+        text_features = text_features + self.tv_mlp(text_features)                   # [B,C,D]
 
-        visual_features_norm = visual_features / visual_features.norm(dim=-1, keepdim=True)
-        text_features_norm = text_features / text_features.norm(dim=-1, keepdim=True)
-        text_features_norm = text_features_norm.permute(0, 2, 1)
-        logits2 = visual_features_norm @ text_features_norm.type(visual_features_norm.dtype) / 0.07
+        # logits2：用增强后的视觉特征（更分离）
+        visual_features_norm = visual_features_enh / (visual_features_enh.norm(dim=-1, keepdim=True) + 1e-6)
+        text_features_norm = text_features / (text_features.norm(dim=-1, keepdim=True) + 1e-6)
+        logits2 = visual_features_norm @ text_features_norm.permute(0, 2, 1).type(visual_features_norm.dtype) / 0.07  # [B,T,C]
 
-        return text_features_ori, logits1, logits2
+        # =========================================================
+        # 用字典返回：用于训练脚本计算 L_sepV 的最小集合
+        # =========================================================
+        aux = {
+            "visual_features": visual_features,           # [B,T,D]  (策略2推荐用增强前)
+            "w": w,                                       # [B,T]
+            "wn": wn,                                     # [B,T]
+            "p_no": p_no,                                 # [B,D]   (可选：减少训练端重复算)
+            "key_padding_mask": key_padding_mask,         # [B,T]   (可选：后续若要mask logits2)
+            "w_max": w.max(dim=1).values,                 # [B]     (可选：gate L_sepV)
+            # 如果你想在训练端尝试用增强后特征算分离，也把它返回：
+            # "visual_features_enh": visual_features_enh,  # [B,T,D]
+        }
+
+        return text_features_ori, logits1, logits2, aux
+
