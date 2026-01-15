@@ -31,3 +31,4 @@ parser.add_argument('--scheduler-milestones', default=[4, 8])
 #Adapter
 parser.add_argument('--text_adapt_until', default=3, type=int)
 parser.add_argument('--t_w', default=0.1, type=float)
+parser.add_argument('--temp', default=5.0, type=float)

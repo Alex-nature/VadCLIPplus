@@ -11,6 +11,25 @@ from utils.tools import get_batch_mask, get_prompt_text
 from utils.xd_detectionMAP import getDetectionMAP as dmAP
 import xd_option
 
+def refine_scores_hierarchical(logits_mlp: torch.Tensor,
+                               logits_align: torch.Tensor,
+                               temp: float = 1.0) -> torch.Tensor:
+    epsilon = 1e-12
+    total_abnormal_prob = torch.sigmoid(logits_mlp / temp)
+    total_normal_prob = 1.0 - total_abnormal_prob 
+    p_align = F.softmax(logits_align / temp, dim=1)
+    p_align_abnormal_only = p_align[:, 1:]
+
+    sum_p_align_abnormal = p_align_abnormal_only.sum(dim=1, keepdim=True)
+    
+    abnormal_distribution = p_align_abnormal_only / (sum_p_align_abnormal + epsilon)
+
+    final_abnormal_probs = total_abnormal_prob * abnormal_distribution
+
+    final_probabilities = torch.cat([total_normal_prob, final_abnormal_probs], dim=1)
+
+    return final_probabilities
+
 def test(model, testdataloader, maxlen, prompt_text, gt, gtsegments, gtlabels, device):
     
     model.to(device)
@@ -47,7 +66,9 @@ def test(model, testdataloader, maxlen, prompt_text, gt, gtsegments, gtlabels, d
             _, logits1, logits2 = model(visual, padding_mask, prompt_text, lengths)
             logits1 = logits1.reshape(logits1.shape[0] * logits1.shape[1], logits1.shape[2])
             logits2 = logits2.reshape(logits2.shape[0] * logits2.shape[1], logits2.shape[2])
-            prob2 = (1 - logits2[0:len_cur].softmax(dim=-1)[:, 0].squeeze(-1))
+            
+            optimized_probs = refine_scores_hierarchical(logits1[0:len_cur], logits2[0:len_cur], args.temp)
+            prob2 = 1 - optimized_probs[:, 0]
             prob1 = torch.sigmoid(logits1[0:len_cur].squeeze(-1))
 
             if i == 0:
@@ -57,7 +78,7 @@ def test(model, testdataloader, maxlen, prompt_text, gt, gtsegments, gtlabels, d
                 ap1 = torch.cat([ap1, prob1], dim=0)
                 ap2 = torch.cat([ap2, prob2], dim=0)
 
-            element_logits2 = logits2[0:len_cur].softmax(dim=-1).detach().cpu().numpy()
+            element_logits2 = optimized_probs.detach().cpu().numpy()
             element_logits2 = np.repeat(element_logits2, 16, 0)
             element_logits2_stack.append(element_logits2)
 
@@ -99,7 +120,7 @@ if __name__ == '__main__':
     gtsegments = np.load(args.gt_segment_path, allow_pickle=True)
     gtlabels = np.load(args.gt_label_path, allow_pickle=True)
 
-    model = CLIPVAD(args.classes_num, args.embed_dim, args.visual_length, args.visual_width, args.visual_head, args.visual_layers, args.attn_window, args.prompt_prefix, args.prompt_postfix, device)
+    model = CLIPVAD(args.classes_num, args.embed_dim, args.visual_length, args.visual_width, args.visual_head, args.visual_layers, args.attn_window, args.prompt_prefix, args.prompt_postfix, args, device)
     model_param = torch.load(args.model_path)
     model.load_state_dict(model_param)
 

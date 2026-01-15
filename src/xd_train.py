@@ -38,6 +38,29 @@ def CLAS2(logits, labels, lengths, device):
     clsloss = F.binary_cross_entropy(instance_logits, labels)
     return clsloss
 
+def L_sepV_from_aux(aux, labels, margin=0.2):
+    """
+    labels: [B,C] 第一列normal
+    aux: dict from model forward, contains 'visual_features','w','wn'
+    只对异常样本计算（最温和）
+    """
+    V  = aux["visual_features"]   # [B,T,D]
+    w  = aux["w"]                 # [B,T]
+    wn = aux["wn"]                # [B,T]
+
+    is_anom = (1.0 - labels[:, 0]).float()                 # [B]
+    idx = (is_anom > 0.5).nonzero(as_tuple=True)[0]
+    if idx.numel() == 0:
+        return V.new_tensor(0.0)
+
+    V, w, wn = V[idx], w[idx], wn[idx]
+    p_ab = torch.einsum('bt,btd->bd', w, V)                # [n,D]
+    p_no = torch.einsum('bt,btd->bd', wn, V)               # [n,D]
+    cos  = F.cosine_similarity(p_ab, p_no, dim=-1)         # [n]
+    return F.relu(margin + cos).mean()
+
+
+
 def train(model, train_loader, test_loader, args, label_map: dict, device):
     model.to(device)
 
@@ -64,6 +87,7 @@ def train(model, train_loader, test_loader, args, label_map: dict, device):
         model.train()
         loss_total1 = 0
         loss_total2 = 0
+        loss_total_sepV = 0
         for i, item in enumerate(train_loader):
             step = 0
             visual_feat, text_labels, feat_lengths = item
@@ -71,7 +95,7 @@ def train(model, train_loader, test_loader, args, label_map: dict, device):
             feat_lengths = feat_lengths.to(device)
             text_labels = get_batch_label(text_labels, prompt_text, label_map).to(device)
 
-            text_features, logits1, logits2 = model(visual_feat, None, prompt_text, feat_lengths) 
+            text_features, logits1, logits2, aux = model(visual_feat, None, prompt_text, feat_lengths)
 
             loss1 = CLAS2(logits1, text_labels, feat_lengths, device) 
             loss_total1 += loss1.item()
@@ -86,15 +110,30 @@ def train(model, train_loader, test_loader, args, label_map: dict, device):
                 loss3 += torch.abs(text_feature_normal @ text_feature_abr)
             loss3 = loss3 / 6
 
-            loss = loss1 + loss2 + loss3 * 1e-4
+            eta = 0.1       # 建议先 0.1 起跑
+            margin = 0.2
+            loss_sepV = L_sepV_from_aux(aux, text_labels, margin=margin)
+            loss_total_sepV += loss_sepV.item()
+
+            loss = loss1 + loss2 + loss3 * 1e-4 + eta * loss_sepV
+
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             step += i * train_loader.batch_size
             if step % 4800 == 0 and step != 0:
-                print('epoch: ', e+1, '| step: ', step, '| loss1: ', loss_total1 / (i+1), '| loss2: ', loss_total2 / (i+1), '| loss3: ', loss3.item())
-                
+                if step % 4800 == 0 and step != 0:
+                    print(
+                        'epoch: ', e+1,
+                        '| step: ', step,
+                        '| loss1: ', loss_total1 / (i+1),
+                        '| loss2: ', loss_total2 / (i+1),
+                        '| loss3: ', loss3.item(),
+                        '| sepV: ', loss_total_sepV / (i+1),
+                        '| eta*sepV: ', eta * (loss_total_sepV / (i+1))
+                    )
+
         scheduler.step()
         AUC, AP, mAP = test(model, test_loader, args.visual_length, prompt_text, gt, gtsegments, gtlabels, device)
 
