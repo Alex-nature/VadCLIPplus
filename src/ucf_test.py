@@ -26,7 +26,7 @@ def refine_scores_hierarchical(logits_mlp: torch.Tensor,
     return final_probabilities
 
 
-def test(model, testdataloader, maxlen, prompt_text, gt, gtsegments, gtlabels, device):
+def test(model, testdataloader, maxlen, prompt_text, gt, gtsegments, gtlabels, args, device):
     
     model.to(device)
     model.eval()
@@ -116,8 +116,8 @@ if __name__ == '__main__':
     gtsegments = np.load(args.gt_segment_path, allow_pickle=True)
     gtlabels = np.load(args.gt_label_path, allow_pickle=True)
 
-    model = CLIPVAD(args.classes_num, args.embed_dim, args.visual_length, args.visual_width, args.visual_head, args.visual_layers, args.attn_window, args.prompt_prefix, args.prompt_postfix, args,device)
+    model = CLIPVAD(args.classes_num, args.embed_dim, args.visual_length, args.visual_width, args.visual_head, args.visual_layers, args.attn_window, args.prompt_prefix, args.prompt_postfix, args, device)
     model_param = torch.load(args.model_path)
     model.load_state_dict(model_param)
 
-    test(model, testdataloader, args.visual_length, prompt_text, gt, gtsegments, gtlabels, device)
+    test(model, testdataloader, args.visual_length, prompt_text, gt, gtsegments, gtlabels, args, device)

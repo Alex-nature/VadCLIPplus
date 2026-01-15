@@ -30,7 +30,7 @@ def refine_scores_hierarchical(logits_mlp: torch.Tensor,
 
     return final_probabilities
 
-def test(model, testdataloader, maxlen, prompt_text, gt, gtsegments, gtlabels, device):
+def test(model, testdataloader, maxlen, prompt_text, gt, gtsegments, gtlabels, args, device):
     
     model.to(device)
     model.eval()
@@ -124,4 +124,4 @@ if __name__ == '__main__':
     model_param = torch.load(args.model_path)
     model.load_state_dict(model_param)
 
-    test(model, test_loader, args.visual_length, prompt_text, gt, gtsegments, gtlabels, device)
+    test(model, test_loader, args.visual_length, prompt_text, gt, gtsegments, gtlabels, args, device)

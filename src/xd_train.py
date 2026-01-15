@@ -135,7 +135,7 @@ def train(model, train_loader, test_loader, args, label_map: dict, device):
                     )
 
         scheduler.step()
-        AUC, AP, mAP = test(model, test_loader, args.visual_length, prompt_text, gt, gtsegments, gtlabels, device)
+        AUC, AP, mAP = test(model, test_loader, args.visual_length, prompt_text, gt, gtsegments, gtlabels, args, device)
 
         if AP > ap_best:
             ap_best = AP 

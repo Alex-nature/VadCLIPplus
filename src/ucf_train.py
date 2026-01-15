@@ -138,7 +138,7 @@ def train(model, normal_loader, anomaly_loader, testloader, args, label_map, dev
                         '| eta*sepV: ', eta * (loss_total_sepV / (i+1))
                     )
         scheduler.step()
-        AUC, AP = test(model, testloader, args.visual_length, prompt_text, gt, gtsegments, gtlabels, device)
+        AUC, AP = test(model, testloader, args.visual_length, prompt_text, gt, gtsegments, gtlabels, args, device)
         AP = AUC
 
         if AP > ap_best:
