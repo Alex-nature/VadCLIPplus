@@ -143,7 +143,12 @@ if __name__ == '__main__':
     test_dataset = UCFDataset(args.visual_length, args.test_list, True, label_map)
     test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
 
-    model = CLIPVAD(args.classes_num, args.embed_dim, args.visual_length, args.visual_width, args.visual_head, args.visual_layers, args.attn_window, args.prompt_prefix, args.prompt_postfix, device)
+    # visual_head/visual_layers/attn_window are no longer CLI options (TCA used instead);
+    # pass safe defaults here to match constructor signature
+    model = CLIPVAD(args.classes_num, args.embed_dim, args.visual_length, args.visual_width, args.prompt_prefix, args.prompt_postfix, device,
+                    tca_layers=args.tca_layers, tca_heads=args.tca_heads, tca_window=args.tca_window,
+                    tca_use_distance_adj=args.tca_use_distance_adj, tca_gamma=args.tca_gamma, tca_bias=args.tca_bias,
+                    tca_use_norm=args.tca_use_norm, tca_dropout=args.tca_dropout)
     # start logging to file (captures stdout/stderr)
     log_path = start_logging()
     try:
