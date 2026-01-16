@@ -24,11 +24,15 @@ parser.add_argument('--gt-path', default='list/gt.npy')
 parser.add_argument('--gt-segment-path', default='list/gt_segment.npy')
 parser.add_argument('--gt-label-path', default='list/gt_label.npy')
 
-parser.add_argument('--lr', default=1e-5)
+parser.add_argument('--lr', default=2e-5, type=float)
+# 当前学习率调度方案用不到
 parser.add_argument('--scheduler-rate', default=0.1)
 parser.add_argument('--scheduler-milestones', default=[3, 6, 10])
 
 #Adapter
 parser.add_argument('--text_adapt_until', default=1, type=int)
 parser.add_argument('--t_w', default=0.6, type=float)
-parser.add_argument('--temp', default=1.0, type=float)
+parser.add_argument('--temp', default=1.2, type=float)
+
+parser.add_argument('--wd', default=0.001, type=float)
+parser.add_argument('--grad-clip', default=5.0, type=float)

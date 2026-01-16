@@ -1,7 +1,6 @@
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from torch.optim.lr_scheduler import MultiStepLR
 import numpy as np
 import random
 
@@ -109,8 +108,14 @@ def train(model, train_loader, test_loader, args, label_map: dict, device):
     gtsegments = np.load(args.gt_segment_path, allow_pickle=True)
     gtlabels = np.load(args.gt_label_path, allow_pickle=True)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
-    scheduler = MultiStepLR(optimizer, args.scheduler_milestones, args.scheduler_rate)
+    # =========================
+    # 方案 S1：AdamW + Cosine + wd + grad_clip
+    # =========================
+    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.wd)
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=args.max_epoch, eta_min=args.lr * 0.01
+    )
+
     prompt_text = get_prompt_text(label_map)
 
     ap_best = 0
@@ -147,7 +152,18 @@ def train(model, train_loader, test_loader, args, label_map: dict, device):
                 loss3 += torch.abs(text_feature_normal @ text_feature_abr)
             loss3 = loss3 / 6
 
-            eta = 0.1
+            # =========================
+            # 方案 S1：eta 分段
+            # =========================
+            if e < 2:       
+                eta = 0.0
+            elif e < 5:     
+                eta = 0.02
+            elif e < 8:     
+                eta = 0.05
+            else:           
+                eta = 0.01
+
             loss_sepV = L_sepV_framewise_vec(
                 aux, text_labels, feat_lengths,
                 m_ab=0.2, lam=0.5,
@@ -160,6 +176,12 @@ def train(model, train_loader, test_loader, args, label_map: dict, device):
 
             optimizer.zero_grad()
             loss.backward()
+
+            # =========================
+            # 方案 S1：梯度裁剪
+            # =========================
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+
             optimizer.step()
 
             step = (i + 1) * train_loader.batch_size
@@ -175,7 +197,7 @@ def train(model, train_loader, test_loader, args, label_map: dict, device):
                 )
 
         scheduler.step()
-        AUC, AP, mAP = test(model, test_loader, args.visual_length, prompt_text, gt, gtsegments, gtlabels, device)
+        AUC, AP, mAP = test(model, test_loader, args.visual_length, prompt_text, gt, gtsegments, gtlabels, args, device)
 
         if AP > ap_best:
             ap_best = AP
@@ -206,7 +228,10 @@ if __name__ == '__main__':
     args = xd_option.parser.parse_args()
     setup_seed(args.seed)
 
-    label_map = dict({'A': 'normal', 'B1': 'fighting', 'B2': 'shooting', 'B4': 'riot', 'B5': 'abuse', 'B6': 'car accident', 'G': 'explosion'})
+    label_map = dict({
+        'A': 'normal', 'B1': 'fighting', 'B2': 'shooting', 'B4': 'riot',
+        'B5': 'abuse', 'B6': 'car accident', 'G': 'explosion'
+    })
 
     train_dataset = XDDataset(args.visual_length, args.train_list, False, label_map)
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
